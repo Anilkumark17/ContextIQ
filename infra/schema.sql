@@ -159,3 +159,11 @@ ALTER TABLE "documents" DROP COLUMN "storage_path";
 CREATE TYPE "public"."access_level" AS ENUM('employee', 'admin');
 ALTER TABLE "documents" ADD COLUMN "access_level" "access_level" DEFAULT 'employee' NOT NULL;
 CREATE INDEX "documents_access_created_idx" ON "documents" USING btree ("access_level","created_at");
+
+-- 0006_rag_pipeline_jobs.sql
+ALTER TYPE "public"."document_status" ADD VALUE 'chunked' BEFORE 'ready';
+ALTER TABLE "document_chunks" ADD COLUMN "page_start" integer;
+ALTER TABLE "document_chunks" ADD COLUMN "page_end" integer;
+ALTER TABLE "documents" ADD COLUMN "attempts" integer DEFAULT 0 NOT NULL;
+ALTER TABLE "documents" ADD COLUMN "lease_expires_at" timestamp with time zone;
+ALTER TABLE "documents" ADD COLUMN "page_count" integer;

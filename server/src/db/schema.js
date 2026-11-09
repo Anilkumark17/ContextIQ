@@ -26,7 +26,8 @@ const updatedAt = () =>
 // ---------- Enums ----------
 
 export const roleEnum = pgEnum('role', ['employee', 'admin']);
-export const documentStatusEnum = pgEnum('document_status', ['pending', 'processing', 'ready', 'failed']);
+// pending -> processing -> chunked (text extracted + chunked) -> ready (embedded + searchable); any -> failed
+export const documentStatusEnum = pgEnum('document_status', ['pending', 'processing', 'chunked', 'ready', 'failed']);
 // Lowest role allowed to retrieve a document: 'employee' = everyone, 'admin' = admins only.
 export const accessLevelEnum = pgEnum('access_level', ['employee', 'admin']);
 export const messageRoleEnum = pgEnum('message_role', ['user', 'assistant', 'system', 'tool']);
@@ -63,6 +64,12 @@ export const documents = pgTable(
     status: documentStatusEnum('status').notNull().default('pending'),
     accessLevel: accessLevelEnum('access_level').notNull().default('employee'),
     error: text('error'),
+    // Pipeline job state. The row itself is the job: the worker claims it by setting status
+    // 'processing' and a lease. An expired lease means the worker died, so the job is reclaimed.
+    // A 'pending' row with a future lease is waiting out a retry backoff.
+    attempts: integer('attempts').notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    pageCount: integer('page_count'),
     chunkCount: integer('chunk_count').notNull().default(0),
     // Groq embedding model the chunks were embedded with; re-embed when it changes.
     embeddingModel: varchar('embedding_model', { length: 120 }),
@@ -90,7 +97,11 @@ export const documentChunks = pgTable(
       .references(() => documents.id, { onDelete: 'cascade' }),
     chunkIndex: integer('chunk_index').notNull(),
     content: text('content').notNull(),
+    // Approximate (characters / 4); replaced by the embedding model's tokenizer count if needed.
     tokenCount: integer('token_count'),
+    // Pages the chunk spans, for citations. Equal when the chunk sits on one page.
+    pageStart: integer('page_start'),
+    pageEnd: integer('page_end'),
     // Set once the vector is upserted to Pinecone; null means not indexed yet.
     indexedAt: timestamp('indexed_at', { withTimezone: true }),
     // e.g. { page: 3, section: "Leave policy" } for citations.

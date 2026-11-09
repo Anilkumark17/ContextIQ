@@ -43,6 +43,13 @@
       "when": 1794215164814,
       "tag": "0005_document_access_level",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794222648635,
+      "tag": "0006_rag_pipeline_jobs",
+      "breakpoints": true
     }
   ]
 }

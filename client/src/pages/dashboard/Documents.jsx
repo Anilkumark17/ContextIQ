@@ -12,9 +12,14 @@ import { formatBytes } from '@/lib/utils'
 const statusVariant = {
   pending: 'outline',
   processing: 'secondary',
+  chunked: 'secondary',
   ready: 'default',
   failed: 'destructive',
 }
+
+// While any document is still in the pipeline, refresh the list so status changes show up live.
+const IN_PIPELINE = new Set(['pending', 'processing'])
+const POLL_MS = 3000
 
 const fetchDocuments = () => api.get('/documents').then(({ data }) => data.documents)
 
@@ -40,6 +45,14 @@ export default function Documents() {
   useEffect(() => {
     applyResult(fetchDocuments())
   }, [applyResult])
+
+  const hasWorkInProgress = documents.some((doc) => IN_PIPELINE.has(doc.status))
+
+  useEffect(() => {
+    if (!hasWorkInProgress) return
+    const timer = setInterval(() => applyResult(fetchDocuments()), POLL_MS)
+    return () => clearInterval(timer)
+  }, [hasWorkInProgress, applyResult])
 
   return (
     <div className='mx-auto grid max-w-5xl gap-6'>
@@ -107,8 +120,19 @@ export default function Documents() {
                     </TableCell>
                     <TableCell>
                       <Badge variant={statusVariant[doc.status]} className="capitalize" title={doc.error ?? undefined}>
+                        {IN_PIPELINE.has(doc.status) && <Loader2Icon className="animate-spin" />}
                         {doc.status}
                       </Badge>
+                      {doc.status === 'chunked' && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {doc.pageCount} page{doc.pageCount === 1 ? '' : 's'} · {doc.chunkCount} chunks
+                        </div>
+                      )}
+                      {doc.status === 'failed' && doc.error && (
+                        <div className="mt-1 max-w-56 truncate text-xs text-destructive" title={doc.error}>
+                          {doc.error}
+                        </div>
+                      )}
                     </TableCell>
                     {isAdmin && (
                       <TableCell className="hidden md:table-cell">

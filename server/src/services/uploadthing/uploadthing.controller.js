@@ -3,6 +3,7 @@ import { UploadThingError, UTApi } from 'uploadthing/server';
 import { config } from '../../config.js';
 import { getAuthUser } from '../../common/middleware/auth.js';
 import { sha256FromUrl } from '../../utils/hash.js';
+import { wakePipeline } from '../RagPipeline/pipeline.worker.js';
 import {
   findByChecksum,
   createDocument,
@@ -61,7 +62,11 @@ export async function handleUploadComplete({ metadata, file }) {
       accessLevel: metadata.accessLevel,
       uploadedBy: metadata.userId,
     });
-    if (created) return { documentId: created.id, outcome: 'created' };
+    if (created) {
+      // The row is the pipeline job; wake the worker so it starts now instead of at the next poll.
+      wakePipeline();
+      return { documentId: created.id, outcome: 'created' };
+    }
 
     existing = await findByChecksum(checksum);
   }
@@ -78,6 +83,7 @@ export async function handleUploadComplete({ metadata, file }) {
 
   if (existing.status === 'failed') {
     const reset = await resetToPending(existing.id);
+    if (reset) wakePipeline();
     return { documentId: existing.id, outcome: reset ? 'retried' : 'duplicate' };
   }
 

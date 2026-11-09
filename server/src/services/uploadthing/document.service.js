@@ -105,11 +105,14 @@ export async function createDocument(data) {
 // KNOWN LIMITATION:
 //   Keeps the OLD fileKey/fileUrl. If that file was deleted from UploadThing,
 //   the retry fails again. The new duplicate upload must be deleted by the controller.
+//
+// PIPELINE: attempts and lease are reset so the worker gets a fresh set of retries
+// and can claim the row immediately.
 // ------------------------------------------------------------------
 export async function resetToPending(documentId) {
   const rows = await db
     .update(documents)
-    .set({ status: 'pending', error: null })
+    .set({ status: 'pending', error: null, attempts: 0, leaseExpiresAt: null })
     .where(and(eq(documents.id, documentId), eq(documents.status, 'failed')))
     .returning({ id: documents.id });
 
@@ -160,6 +163,7 @@ export async function listDocuments(role) {
       accessLevel: documents.accessLevel,
       error: documents.error,
       chunkCount: documents.chunkCount,
+      pageCount: documents.pageCount,
       uploadedBy: users.name,
       createdAt: documents.createdAt,
     })
