@@ -123,7 +123,7 @@ export default function Documents() {
                         {IN_PIPELINE.has(doc.status) && <Loader2Icon className="animate-spin" />}
                         {doc.status}
                       </Badge>
-                      {doc.status === 'chunked' && (
+                      {(doc.status === 'chunked' || doc.status === 'ready') && (
                         <div className="mt-1 text-xs text-muted-foreground">
                           {doc.pageCount} page{doc.pageCount === 1 ? '' : 's'} · {doc.chunkCount} chunks
                         </div>

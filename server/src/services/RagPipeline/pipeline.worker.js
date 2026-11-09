@@ -1,6 +1,6 @@
 // src/services/RagPipeline/pipeline.worker.js
 //
-// In-process worker that turns 'pending' documents into chunks.
+// In-process worker that turns uploaded documents into searchable vectors.
 //
 // WHY A DB-BACKED WORKER (and not running the pipeline inside onUploadComplete)
 // - onUploadComplete holds the browser's upload open until it returns; long work would stall it.
@@ -9,19 +9,19 @@
 // reclaimed, so no document is ever stuck.
 //
 // LIFECYCLE OF ONE JOB
-//   claim   pending (lease free) -> processing, attempts+1, lease = now + 5 min   (one atomic SQL)
-//   run     download -> extract -> chunk -> save                  (pipeline.service.js)
-//   success processing -> chunked                                 (saved with the chunks)
+//   claim   pending | chunked | processing(lease expired)  -> processing, attempts+1, lease 5 min
+//   run     chunk (if not done) -> embed + index (unindexed chunks only)   (pipeline.service.js)
+//   success processing -> ready
 //   failure permanent error OR attempts used up -> failed
-//           temporary error -> pending with lease = now + backoff  (waits, then is reclaimed)
+//           temporary error -> pending with lease = now + backoff  (waits, then is reclaimed;
+//                              saved chunks and indexed batches are kept, so it resumes)
 
-import { and, eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { documents } from '../../db/schema.js';
-import { PermanentPipelineError } from './pipeline-error.js';
-import { runPipeline } from './pipeline.service.js';
+import { LeaseLostError, PermanentPipelineError } from './pipeline-error.js';
+import { LEASE_SECONDS, ownedBy, runPipeline } from './pipeline.service.js';
 
-const LEASE_SECONDS = 5 * 60;
 const IDLE_POLL_MS = 5_000;
 export const MAX_ATTEMPTS = 3;
 // Wait before retry n (after attempt 1, after attempt 2).
@@ -30,7 +30,8 @@ const RETRY_BACKOFF_SECONDS = [30, 120];
 const log = (message) => console.log(`[pipeline] ${message}`);
 
 // Claim the oldest claimable document. FOR UPDATE SKIP LOCKED makes concurrent claims safe:
-// two workers never get the same row. Claimable = pending or processing, with no live lease.
+// two workers never get the same row. Claimable = waiting status with no live lease.
+// 'chunked' covers documents chunked before the embedding stage existed.
 export async function claimNext() {
   const result = await db.execute(sql`
     UPDATE documents
@@ -40,13 +41,14 @@ export async function claimNext() {
         updated_at = now()
     WHERE id = (
       SELECT id FROM documents
-      WHERE status IN ('pending', 'processing')
+      WHERE status IN ('pending', 'chunked', 'processing')
         AND (lease_expires_at IS NULL OR lease_expires_at < now())
       ORDER BY created_at
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, file_url, mime_type, file_name, attempts
+    RETURNING id, file_url, mime_type, file_name, title, access_level, pinecone_namespace,
+              chunk_count, page_count, attempts
   `);
 
   const row = result.rows[0];
@@ -56,13 +58,14 @@ export async function claimNext() {
     fileUrl: row.file_url,
     mimeType: row.mime_type,
     fileName: row.file_name,
+    title: row.title,
+    accessLevel: row.access_level,
+    namespace: row.pinecone_namespace,
+    chunkCount: row.chunk_count,
+    pageCount: row.page_count,
     attempts: row.attempts,
   };
 }
-
-// Only the current claim may change the row (status 'processing' + same attempt number).
-const ownedBy = (job) =>
-  and(eq(documents.id, job.id), eq(documents.status, 'processing'), eq(documents.attempts, job.attempts));
 
 const errorText = (err) => String(err?.message ?? err).slice(0, 1000);
 
@@ -96,10 +99,17 @@ export async function processJob(job, deps) {
 
   const startedAt = Date.now();
   try {
-    const { pageCount, chunkCount, saved } = await runPipeline(job, deps);
-    if (saved) log(`${job.id} chunked: ${pageCount} pages, ${chunkCount} chunks (${Date.now() - startedAt} ms)`);
-    else log(`${job.id} finished but its lease was taken over; result left to the new owner`);
+    const result = await runPipeline(job, deps);
+    log(
+      `${job.id} ready: ${result.chunked ? `chunked into ${result.chunkCount}` : `${result.chunkCount} chunks`}, ` +
+        `indexed ${result.indexed} (${result.embedTokens} embed tokens), removed ${result.removed} stale ` +
+        `(${Date.now() - startedAt} ms)`,
+    );
   } catch (err) {
+    if (err instanceof LeaseLostError) {
+      log(`${job.id} lease lost; the new owner continues`);
+      return;
+    }
     const message = errorText(err);
     try {
       if (err instanceof PermanentPipelineError || job.attempts >= MAX_ATTEMPTS) {

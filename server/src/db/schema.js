@@ -26,7 +26,8 @@ const updatedAt = () =>
 // ---------- Enums ----------
 
 export const roleEnum = pgEnum('role', ['employee', 'admin']);
-// pending -> processing -> chunked (text extracted + chunked) -> ready (embedded + searchable); any -> failed
+// pending -> processing -> ready (chunked + embedded + searchable); any -> failed.
+// 'chunked' is a waiting state for documents chunked before embedding ran; the worker picks it up.
 export const documentStatusEnum = pgEnum('document_status', ['pending', 'processing', 'chunked', 'ready', 'failed']);
 // Lowest role allowed to retrieve a document: 'employee' = everyone, 'admin' = admins only.
 export const accessLevelEnum = pgEnum('access_level', ['employee', 'admin']);
@@ -87,7 +88,8 @@ export const documents = pgTable(
 );
 
 // Chunk text lives here for citations; the vector lives in Pinecone.
-// The Pinecone vector id is this row's `id`, so search hits map straight back to a chunk.
+// The Pinecone vector id is "<documentId>#<chunkIndex>", so search hits map straight back to a chunk
+// via the (document_id, chunk_index) unique key, and re-indexing overwrites instead of duplicating.
 export const documentChunks = pgTable(
   'document_chunks',
   {
